@@ -1,0 +1,110 @@
+asyncapi: 3.0.0
+info:
+  title: M321 Order Service Messaging API
+  version: 2.0.0
+  description: Asynchronous order processing and processed-order events over RabbitMQ.
+servers:
+  localRabbitMQ:
+    host: localhost:5672
+    protocol: amqp
+channels:
+  orderProcessing:
+    address: orders.processing
+    description: Durable work queue shared by OrderWorker1 and OrderWorker2.
+    messages:
+      orderMessage:
+        $ref: '#/components/messages/OrderMessage'
+  orderProcessed:
+    address: orders.processed
+    description: Fanout exchange for successfully processed orders.
+    messages:
+      orderProcessedEvent:
+        $ref: '#/components/messages/OrderProcessedEvent'
+  notificationQueue:
+    address: orders.notification
+    description: Durable queue bound to orders.processed for notifications.
+    messages:
+      orderProcessedEvent:
+        $ref: '#/components/messages/OrderProcessedEvent'
+  auditQueue:
+    address: orders.audit
+    description: Durable queue bound to orders.processed for audit entries.
+    messages:
+      orderProcessedEvent:
+        $ref: '#/components/messages/OrderProcessedEvent'
+operations:
+  publishOrder:
+    action: send
+    channel:
+      $ref: '#/channels/orderProcessing'
+  processOrder:
+    action: receive
+    channel:
+      $ref: '#/channels/orderProcessing'
+  publishOrderProcessed:
+    action: send
+    channel:
+      $ref: '#/channels/orderProcessed'
+  sendNotification:
+    action: receive
+    channel:
+      $ref: '#/channels/notificationQueue'
+  createAuditEntry:
+    action: receive
+    channel:
+      $ref: '#/channels/auditQueue'
+components:
+  messages:
+    OrderMessage:
+      name: OrderMessage
+      contentType: application/json
+      payload:
+        $ref: '#/components/schemas/OrderMessagePayload'
+    OrderProcessedEvent:
+      name: OrderProcessedEvent
+      contentType: application/json
+      payload:
+        $ref: '#/components/schemas/OrderProcessedEventPayload'
+  schemas:
+    OrderMessagePayload:
+      type: object
+      required: [orderId, product, quantity, createdAt]
+      properties:
+        orderId:
+          type: integer
+          format: int64
+        product:
+          type: string
+        quantity:
+          type: integer
+          minimum: 1
+        createdAt:
+          type: string
+          format: date-time
+      examples:
+        - orderId: 101
+          product: Keyboard
+          quantity: 2
+          createdAt: '2026-09-04T10:00:00Z'
+    OrderProcessedEventPayload:
+      type: object
+      required: [orderId, product, quantity, processedAt, processedBy]
+      properties:
+        orderId:
+          type: integer
+          format: int64
+        product:
+          type: string
+        quantity:
+          type: integer
+        processedAt:
+          type: string
+          format: date-time
+        processedBy:
+          type: string
+      examples:
+        - orderId: 101
+          product: Keyboard
+          quantity: 2
+          processedAt: '2026-09-04T10:00:03Z'
+          processedBy: OrderWorker1

@@ -1,21 +1,58 @@
 openapi: 3.0.3
 info:
-  title: M321 Hello Service API
-  description: Contract for the hello operation shared by the two M321 services.
-  version: 2.0.0
+  title: M321 Order Service API
+  description: Synchronous entry point for asynchronously processed orders.
+  version: 3.0.0
 servers:
   - url: http://localhost:8081
-    description: Noah service (local)
 paths:
-  /api/hello:
-    get:
-      operationId: getHello
-      summary: Return the service greeting
+  /api/orders:
+    post:
+      operationId: createOrder
+      summary: Accept a new order for asynchronous processing
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/CreateOrderRequest'
+            example:
+              product: Keyboard
+              quantity: 2
       responses:
-        '200':
-          description: Greeting returned successfully
+        '202':
+          description: Order accepted and published to RabbitMQ
           content:
-            text/plain:
+            application/json:
               schema:
-                type: string
-              example: Hello from Service Noah
+                $ref: '#/components/schemas/OrderMessage'
+              example:
+                orderId: 101
+                product: Keyboard
+                quantity: 2
+                createdAt: '2026-09-04T10:00:00Z'
+        '400':
+          description: Product is missing or quantity is not positive
+components:
+  schemas:
+    CreateOrderRequest:
+      type: object
+      required: [product, quantity]
+      properties:
+        product:
+          type: string
+        quantity:
+          type: integer
+          minimum: 1
+    OrderMessage:
+      allOf:
+        - $ref: '#/components/schemas/CreateOrderRequest'
+        - type: object
+          required: [orderId, createdAt]
+          properties:
+            orderId:
+              type: integer
+              format: int64
+            createdAt:
+              type: string
+              format: date-time

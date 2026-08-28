@@ -1,68 +1,172 @@
-﻿# m321-service-noah
+# M321 Order Service
 
-Spring-Boot-Service für das Modul M321. Noah läuft lokal auf Port `8081` und ruft
-den Partner-Service auf Port `8082` alle zehn Sekunden auf.
+Kleine Spring-Boot-Anwendung zur Demonstration synchroner REST-Kommunikation
+und asynchroner Verarbeitung mit RabbitMQ. Ein Client gibt eine Bestellung per
+HTTP ab und erhält sofort `202 Accepted`. Die eigentliche Verarbeitung erfolgt
+anschliessend unabhängig über RabbitMQ.
+
+```text
+POST /api/orders
+       |
+       v
+  OrderProducer
+       |
+       v
+orders.processing (durable Queue / Round Robin)
+       |
+   +---+---+
+   |       |
+Worker 1  Worker 2
+   |       |
+   +---+---+
+       |
+       v
+orders.processed (Fanout Exchange)
+       |
+   +---+----------------+
+   |                    |
+orders.notification   orders.audit
+   |                    |
+NotificationConsumer  AuditConsumer
+```
+
+## Nachrichtenfluss
+
+`OrderProducer` publiziert eine `OrderMessage` als JSON in die dauerhafte Queue
+`orders.processing`. `OrderWorker1` und `OrderWorker2` sind konkurrierende
+Consumer derselben Queue: RabbitMQ gibt jede Bestellung genau einem Worker
+(Round Robin/Work Queue). Jeder Worker simuliert standardmässig drei Sekunden
+Bearbeitungszeit.
+
+Nach erfolgreicher Verarbeitung publiziert der Worker ein
+`OrderProcessedEvent` an den Fanout Exchange `orders.processed`. Dieser legt je
+eine Kopie in `orders.notification` und `orders.audit`. Deshalb erhalten der
+`NotificationConsumer` und der `AuditConsumer` dasselbe Ereignis.
+
+OpenAPI in [`openapi.yaml`](openapi.yaml) beschreibt den synchronen HTTP-
+Einstieg. AsyncAPI in [`asyncapi.yaml`](asyncapi.yaml) beschreibt die
+asynchronen Channels und JSON-Nachrichten. RabbitMQ entkoppelt Annahme und
+Verarbeitung; wartende Bestellungen können in der Queue gespeichert werden.
 
 ## Start
+
+Docker Desktop starten und im Projektverzeichnis ausführen:
+
+```powershell
+docker compose up -d
+docker compose ps
+```
+
+- RabbitMQ AMQP: `localhost:5672`
+- Management UI: http://localhost:15672
+- Benutzer/Passwort: `guest` / `guest`
+
+Anwendung starten:
 
 ```powershell
 .\mvnw.cmd spring-boot:run
 ```
 
-Die aktuelle API antwortet unter `GET http://localhost:8081/api/hello` mit
-`Hello from Service Noah` (`text/plain`, HTTP 200). Basis-URL und Pfad des
-Partners stehen in `src/main/resources/application.properties` und sind nicht im
-Java-Code hartcodiert.
+RabbitMQ stoppen beziehungsweise wieder starten:
 
-## API Contract / OpenAPI
+```powershell
+docker compose stop
+docker compose start
+```
 
-Der aktuelle, verbindliche Vertrag liegt in [`openapi.yaml`](openapi.yaml). Er
-beschreibt Pfad, Methode, Status, Medientyp und Beispielantwort. Die frühere
-Version bleibt zur Demonstration unter [`docs/openapi-v1.yaml`](docs/openapi-v1.yaml)
-erhalten.
+## Bestellung senden
 
-Für dieses kleine Text-API wäre ein Generator unverhältnismässig: Er würde viele
-generierte Dateien und Zusatzabhängigkeiten erzeugen, obwohl es weder DTOs noch
-mehrere Operationen gibt. Stattdessen bildet `PartnerServiceClient` die aus dem
-Vertrag abgeleitete, typisierte Consumer-Schnittstelle ab.
-`OpenApiPartnerServiceClient` kapselt HTTP-Details; der Poller kennt weder Pfad
-noch `RestClient`. Der konfigurierte Pfad entspricht dem aktuellen Vertrag. Ist
-der Partner nicht erreichbar oder liefert er z. B. 404, wird gewarnt und Noah
-läuft weiter.
+```powershell
+$body = @{ product = "Keyboard"; quantity = 2 } | ConvertTo-Json
+Invoke-RestMethod -Method Post `
+  -Uri http://localhost:8081/api/orders `
+  -ContentType application/json `
+  -Body $body
+```
 
-### Änderungen publizieren
+Antwort mit HTTP 202:
 
-1. Provider-API ändern.
-2. `openapi.yaml` im selben Commit aktualisieren und die API-Version erhöhen.
-3. Commit in das eigene Git-Repository pushen.
-4. Partner über Commit/Release und den Breaking-/Non-Breaking-Charakter informieren;
-   er übernimmt die neue `openapi.yaml` aus dem Repository.
-5. Partner passt `PartnerServiceClient` beziehungsweise dessen Implementierung
-   an (bei einer grösseren API könnte daraus ein Client generiert werden) und testet.
+```json
+{
+  "orderId": 101,
+  "product": "Keyboard",
+  "quantity": 2,
+  "createdAt": "2026-09-04T10:00:00Z"
+}
+```
 
-Ein **Breaking Change** ist eine inkompatible Änderung, durch die ein bestehender
-Consumer ohne Anpassung nicht mehr funktioniert. Hier wurde `GET /hello`
-(Version 1) zu `GET /api/hello` (Version 2). Ein alter Consumer erhält auf
-`/hello` HTTP 404. Der Poller loggt den Fehler; die Anwendung läuft weiter.
+Beispiel-Logs:
 
-### Breaking Change im Unterricht demonstrieren
+```text
+Order 101 accepted: Keyboard x2
+OrderWorker1 started processing order 101
+OrderWorker1 finished processing order 101
+Notification sent for order 101
+Audit entry created for order 101
+```
 
-Die Properties lassen sich beim Start überschreiben. So sind alle drei Zustände
-ohne Codeänderung und unabhängig in beiden Repositories demonstrierbar.
+## Automatische Demo und Konfiguration
 
-1. **Version 1:** Provider mit altem Pfad starten:
-   `.\mvnw.cmd spring-boot:run "-Dspring-boot.run.arguments=--service-api.hello-path=/hello"`
-2. Consumer ebenfalls mit altem Pfad starten (`--other-service.hello-path=/hello`).
-   Im Log erscheint die erfolgreiche Antwort.
-3. **Version 2:** Provider stoppen und ohne Override neu starten. Er bietet jetzt
-   nur `/api/hello` an.
-4. Den alten Consumer unverändert laufen lassen. `/hello` liefert 404 und im Log
-   erscheint `Partner API call failed`; der Service läuft weiter.
-5. Die Verträge vergleichen und die neue `openapi.yaml` per Commit/Push teilen.
-6. **Version 3:** Consumer stoppen und ohne alten Pfad-Override neu starten. Er
-   verwendet jetzt `/api/hello`.
-7. Im Log erneut die erfolgreiche Antwort beobachten.
+Der Demo-Scheduler erzeugt abwechslungsweise Keyboard, Mouse, Monitor, Headset
+und SSD. Er ruft direkt den `OrderProducer` auf und verwendet keine internen
+HTTP-Requests.
 
-Wenn beide echten Services gleichzeitig laufen, behält jeder seinen Port (`8081`
-beziehungsweise `8082`) und verwendet als `other-service.url` die Adresse des
-jeweils anderen Services.
+```properties
+messaging.auto-producer.enabled=true
+messaging.auto-producer.interval=1800
+messaging.consumer.processing-time=3000
+spring.rabbitmq.listener.simple.prefetch=1
+```
+
+Mit `enabled=false` lässt sich die automatische Produktion deaktivieren. Ein
+kleineres Producer-Intervall oder eine grössere Bearbeitungszeit erzeugt
+schneller einen Backlog. `prefetch=1` sorgt dafür, dass jeder Worker höchstens
+eine noch nicht bestätigte Bestellung reserviert.
+
+## RabbitMQ Management UI beobachten
+
+Unter **Queues and Streams → orders.processing** bedeuten:
+
+- **Ready:** wartet noch auf einen Worker.
+- **Unacked:** wird gerade verarbeitet; bei zwei Workern normalerweise bis zu 2.
+- **Total:** Ready plus Unacked.
+
+Unter **Exchanges → orders.processed → Bindings** sind die beiden unabhängigen
+Queues `orders.notification` und `orders.audit` sichtbar.
+
+## Backlog, Stop und Restart demonstrieren
+
+1. Anwendung mit aktiviertem Demo-Producer starten.
+2. Im UI `orders.processing` öffnen und die Message Rates beobachten.
+3. Die Consumer stoppen, während REST und Producer weiterlaufen:
+
+```powershell
+Invoke-RestMethod -Method Post -Uri http://localhost:8081/api/consumers/stop
+```
+
+4. `Consumers` fällt auf 0, `Unacked` wird 0 und `Ready` steigt. Die durable
+   Queue speichert die JSON-Bestellungen.
+5. Consumer wieder starten:
+
+```powershell
+Invoke-RestMethod -Method Post -Uri http://localhost:8081/api/consumers/start
+```
+
+6. Zwei Worker verarbeiten wieder parallel; `Unacked` liegt typischerweise bei
+   2. Die Logs zeigen, welcher Worker welche Order erhalten hat.
+7. Zum vollständigen Abbau den Service mit deaktiviertem Producer neu starten:
+
+```powershell
+.\mvnw.cmd spring-boot:run `
+  "-Dspring-boot.run.arguments=--messaging.auto-producer.enabled=false"
+```
+
+Dann sinkt `Ready` schrittweise auf 0. Für einen stärkeren Backlog kann
+`messaging.auto-producer.interval` beispielsweise auf `500` gesetzt werden.
+
+## Verbindungswerte
+
+Die RabbitMQ-Werte können über `RABBITMQ_HOST`, `RABBITMQ_PORT`,
+`RABBITMQ_USERNAME` und `RABBITMQ_PASSWORD` überschrieben werden. Es wird keine
+Datenbank benötigt; Order-IDs werden für diese Schul-Demo im Speicher erzeugt
+und beginnen nach einem Anwendungsneustart wieder bei 101.
