@@ -9,6 +9,7 @@ import org.springframework.web.bind.annotation.RestController;
 
 @RestController
 @RequestMapping("/api/consumers")
+@SuppressWarnings("SpringJavaInjectionPointsAutowiringInspection")
 public class ConsumerController {
 
     private final RabbitListenerEndpointRegistry listenerRegistry;
